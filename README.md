@@ -2,6 +2,7 @@
 Regdriver-SC can be used to distinguish driver mutations from non-driver mutations, identify true driver events, and integrates mutation impact scoring with mutation burden analysis.
 
 1.Create the initial environment
+
 ```conda create -n Regdriver-SC python=3.8
 conda activate Regdriver-SC
 # (optional if you would like to use flash attention)
@@ -18,4 +19,4 @@ conda config --add channels defaults
 conda config --add channels bioconda
 conda config --add channels conda-forge```
 
-2.versions
+2.Versions
