@@ -1,4 +1,5 @@
-
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """
 Unified pipeline (no intermediate files on disk):
 
@@ -21,16 +22,31 @@ import numpy as np
 import pandas as pd
 from pybedtools import BedTool
 
-from scipy.stats import binom_test, pearsonr
+from scipy.stats import binomtest, pearsonr
 from sklearn.metrics import r2_score, explained_variance_score
 from statsmodels.sandbox.stats.multicomp import multipletests  # BH-FDR
 
 logger = logging.getLogger("INFER")
 
+# --------------------------------------------------
+# sklearn 旧版本兼容（在反序列化前注入别名）
+# --------------------------------------------------
+def _install_sklearn_compat_shims():
+    import sys as _sys, types as _types
+    try:
+        import sklearn.preprocessing._data as _data
+    except Exception:
+        return
+    shim = _types.ModuleType("sklearn.preprocessing.data")
+    shim.__dict__.update(_data.__dict__)
+    _sys.modules["sklearn.preprocessing.data"] = shim
+
+
 # =========================
 # I/O utils (inlined)
 # =========================
 def read_model(path: str):
+    _install_sklearn_compat_shims()
     with open(path, "rb") as f:
         return pickle.load(f)
 
@@ -159,50 +175,135 @@ def build_region_mutation_impact_score_df(
     return out[["mutation_impact_score"]]
 
 # =========================
-# Step B: Binomial-only inference (accept fs_df in memory)
+# Step B: Binomial-only inference
 # =========================
-def scale_data_with_model_scaler(X: np.ndarray, scaler):
-    return scaler.transform(X)
-
 def report_metrics(yhat: np.ndarray, y: np.ndarray):
     r2 = r2_score(y, yhat)
     var_exp = explained_variance_score(y, yhat)
     r = float(pearsonr(yhat, y)[0]) if len(yhat) > 1 else np.nan
     logger.info(f"Test-set metrics: R2={r2:.3f}, VarExplained={var_exp:.3f}, Pearson r={r:.3f}")
 
-def predict_with_glm_binomial(X: np.ndarray, y_df: pd.DataFrame, model_dict: dict) -> np.ndarray:
-    Xc = np.c_[X, np.ones(X.shape[0])]
+def bh_fdr(pvals: np.ndarray):
+    return multipletests(pvals, method="fdr_bh")[1]
+
+def binomial_burden_test(count, pred, offset):
+    p = np.clip(pred / offset, 1e-12, 1 - 1e-12)
+    # 使用 binomtest（非弃用）
+    pvals = np.array([binomtest(int(x), n=int(n), p=float(pi), alternative="greater").pvalue
+                      for x, n, pi in zip(count, offset, p)])
+    return pvals
+
+# -------- 关键新增：推理阶段的特征对齐管道 --------
+def prepare_X_for_model(X_df: pd.DataFrame, model_dict: dict) -> np.ndarray:
+    """
+    训练->推理 的对齐：
+      1) 按训练时 scaler 拟合的完整列集 feature_names 对齐顺序；缺列补 0
+      2) 用存下来的 RobustScaler.transform 缩放
+      3) 再切到训练时用于 GLM 的 use_features
+    返回：(n_samples, n_used_features)
+    """
+    all_feats = [str(f) for f in model_dict["feature_names"]]
+    use_feats = model_dict.get("use_features")
+    if use_feats is None or len(use_feats) == 0:
+        use_feats = all_feats
+    use_feats = [str(f) for f in use_feats]
+
+    # 补缺列并重排
+    Xw = X_df.copy()
+    for f in all_feats:
+        if f not in Xw.columns:
+            Xw[f] = 0.0
+    Xw = Xw.loc[:, all_feats]
+
+    # 缩放
+    scaler = model_dict["scaler"]
+    X_scaled = scaler.transform(Xw.values)
+
+    # 切 use_features（保持训练顺序）
+    feat_index = {f: i for i, f in enumerate(all_feats)}
+    idx = [feat_index[f] for f in use_feats]
+    X_used = X_scaled[:, idx]
+
+    # 形状自检：GLM 训练时手动加了常数项，所以 params 长度 = used_features + 1
+    n_params = len(np.asarray(model_dict["model"].params))
+    if X_used.shape[1] + 1 != n_params:
+        raise RuntimeError(
+            f"特征维度与 GLM 参数不匹配：X_used.shape[1]+1 = {X_used.shape[1]+1}, "
+            f"len(params) = {n_params}. "
+            f"检查 use_features 与保存的模型是否一致。"
+        )
+    return X_used
+
+def predict_with_glm_binomial(X_used: np.ndarray, y_df: pd.DataFrame, model_dict: dict) -> np.ndarray:
+    # 训练时加了常数项，这里同样加
+    Xc = np.c_[X_used, np.ones(X_used.shape[0])]
+    n_params = len(np.asarray(model_dict["model"].params))
+    if Xc.shape[1] != n_params:
+        raise RuntimeError(f"预测矩阵列数({Xc.shape[1]})与模型参数数({n_params})不一致。")
     prob = np.array(model_dict["model"].predict(Xc))
     pred = prob * (y_df.length.values * y_df.N.values)
     return pred
 
-def binomial_burden_test(count, pred, offset):
-    p = np.clip(pred / offset, 1e-12, 1 - 1e-12)
-    pvals = np.array([binom_test(x, n=int(n), p=float(pi), alternative="greater")
-                      for x, n, pi in zip(count, offset, p)])
-    return pvals
+def run_inference_with_mutation_impact_score(
+    model_path: str,
+    X_path: str,
+    y_path: str,
+    fs_df: Optional[pd.DataFrame],
+    use_gmean: bool,
+    project_name: str,
+    out_dir: str,
+):
+    model = read_model(model_path)
+    if model.get("model_name") != "Binomial":
+        logger.error(f"Loaded model is not Binomial. Got: {model.get('model_name')}")
+        sys.exit(1)
 
-def bh_fdr(pvals: np.ndarray):
-    return multipletests(pvals, method="fdr_bh")[1]
+    # 注意：这里不再提前切 model["feature_names"]，由 prepare_X_for_model 统一处理
+    X_df = read_feature(X_path)
+    y = read_response(y_path)
 
+    use_bins = np.intersect1d(X_df.index.values, y.index.values)
+    X_df = X_df.loc[use_bins, :]
+    y = y.loc[use_bins, :]
+
+    # 统一到训练列集 -> 缩放 -> 切 use_features
+    X_used = prepare_X_for_model(X_df, model)
+
+    # 预测 & 评估
+    y["nPred"] = predict_with_glm_binomial(X_used, y, model)
+    report_metrics(y["nPred"].values, y["nMut"].values)
+
+    # 原始负担检验
+    count = np.sqrt(y.nMut * y.nSample) if use_gmean else y.nMut
+    offset = y.length * y.N + 1
+    y["raw_p"] = binomial_burden_test(count, y["nPred"].values, offset.values)
+    y["raw_q"] = bh_fdr(y["raw_p"].values)
+
+    # 功能注释加权
+    y = functional_adjustment_binomial(y, fs_df, use_gmean)
+
+    # 仅保存最终结果
+    os.makedirs(out_dir, exist_ok=True)
+    y = y.sort_values(y.columns[-2], ascending=True)
+    outp = os.path.join(out_dir, f"{project_name}.result.tsv")
+    y.to_csv(outp, sep="\t")
+    logger.info(f"Saved final result to: {outp}")
+
+# =========================
+# 功能加权（维持你的原实现）
+# =========================
 def functional_adjustment_binomial(
     y: pd.DataFrame,
     fs_df: Optional[pd.DataFrame],
     use_gmean: bool = True,
 ):
-    """
-    Functional adjustment with in-memory fs_df (index=binID, numeric columns),
-    using fixed cutoff = 0.5 for ALL score columns.
-    """
     if fs_df is None or fs_df.shape[1] == 0:
         return y
 
-    # ensure index alignment
     if fs_df.index.name != "binID":
         fs_df = fs_df.copy()
         fs_df.index.name = "binID"
 
-    # keep only numeric columns
     fs_df = fs_df.select_dtypes(include=[np.number])
     if fs_df.shape[1] == 0:
         return y
@@ -211,7 +312,6 @@ def functional_adjustment_binomial(
     threshold = -10.0 * np.log10(cutoff_fixed)
     logger.info(f"Functional adjustment: fixed cutoff=0.5; threshold={threshold:.4f}")
 
-    # join by index
     y = y.join(fs_df, how="left")
     y.fillna({col: 0.0 for col in fs_df.columns}, inplace=True)
 
@@ -253,49 +353,6 @@ def functional_adjustment_binomial(
         y["avg_q"] = bh_fdr(y["avg_p"])
 
     return y
-
-def run_inference_with_mutation_impact_score(
-    model_path: str,
-    X_path: str,
-    y_path: str,
-    fs_df: Optional[pd.DataFrame],
-    use_gmean: bool,
-    project_name: str,
-    out_dir: str,
-):
-    model = read_model(model_path)
-    if model.get("model_name") != "Binomial":
-        logger.error(f"Loaded model is not Binomial. Got: {model.get('model_name')}")
-        sys.exit(1)
-
-    X_df = read_feature(X_path)
-    X_df = X_df.loc[:, model["feature_names"]]
-    y = read_response(y_path)
-
-    use_bins = np.intersect1d(X_df.index.values, y.index.values)
-    X = X_df.loc[use_bins, :].values
-    y = y.loc[use_bins, :]
-
-    X = scale_data_with_model_scaler(X, model["scaler"])
-    X = X[:, np.isin(model["feature_names"], model["use_features"])]
-
-    y["nPred"] = predict_with_glm_binomial(X, y, model)
-    report_metrics(y["nPred"].values, y["nMut"].values)
-
-    count = np.sqrt(y.nMut * y.nSample) if use_gmean else y.nMut
-    offset = y.length * y.N + 1
-    y["raw_p"] = binomial_burden_test(count, y["nPred"].values, offset.values)
-    y["raw_q"] = bh_fdr(y["raw_p"].values)
-
-    # functional adjustment using in-memory mutation_impact_score
-    y = functional_adjustment_binomial(y, fs_df, use_gmean)
-
-    # save ONLY final result
-    os.makedirs(out_dir, exist_ok=True)
-    y = y.sort_values(y.columns[-2], ascending=True)
-    outp = os.path.join(out_dir, f"{project_name}.result.tsv")
-    y.to_csv(outp, sep="\t")
-    logger.info(f"Saved final result to: {outp}")
 
 # =========================
 # CLI
@@ -350,7 +407,7 @@ if __name__ == "__main__":
         model_path=args.model_path,
         X_path=args.X_path,
         y_path=args.y_path,
-        fs_df=mutation_impact_score_df,   # <-- pass DataFrame, not a file
+        fs_df=mutation_impact_score_df,
         use_gmean=(not args.no_gmean),
         project_name=args.project_name,
         out_dir=args.out_dir,
