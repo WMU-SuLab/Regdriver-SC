@@ -72,6 +72,7 @@ Additionally, we provide precomputed feature files, blood_mutation1.npy and bloo
 
 ## 4.Predicted probability score
 
+We provide a collection of pre-trained prediction models, where a separate model has been trained for each tissue corresponding to the three types of regulatory elements to predict sequence probabilities.
 The prepared sequence information and sequence features before and after the mutation were run through the prediction model that we had already trained. 
 Eventually, the sequence prediction probabilities before and after the mutation were obtained, which were used as the mutation impact score to correct the subsequent results.
 
