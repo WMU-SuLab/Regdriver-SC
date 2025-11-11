@@ -72,6 +72,9 @@ Additionally, we provide precomputed feature files, blood_mutation1.npy and bloo
 
 ## 4.Predicted probability score
 
+The prepared sequence information and sequence features before and after the mutation were run through the prediction model that we had already trained. 
+Eventually, the sequence prediction probabilities before and after the mutation were obtained, which were used as the mutation impact score to correct the subsequent results.
+
 ```
 python predict_delta_prob.py \
   --model_path /path/model/blood_model.pth \
