@@ -39,7 +39,7 @@ conda config --add channels conda-forge
 ## 3. Extract sequence features
 
 ```
-  python extract_features.py --model_path zhihan1996/DNABERT-2-117M \
+  python extract_features.py --model_path /path/DNABERT-2-117M \
   --train_file /path/data/blood1.bed \
   --test_file  /path/data/blood2.bed \
   --output_dir /path/output \
