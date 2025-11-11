@@ -99,8 +99,7 @@ python background.py \
 
 ## 7.Mutation impact score correction and burden test
 
-Regdriver-SC can be used to distinguish driver mutations from non-driver mutations, identify true driver events, and integrates mutation impact scoring with mutation burden analysis.
-
+Regdriver-SC integrates mutation impact scoring with mutation burden analysis to distinguish driver mutations from non-driver mutations and to identify true driver events.
 ```
 python infer_mutation_burden_impact.py \
   --mutations_maf /path/data/mutation_hg19/blood_non_coding_hg19.maf \
