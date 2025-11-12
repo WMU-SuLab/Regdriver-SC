@@ -42,6 +42,8 @@ conda config --add channels conda-forge
 
 Dataset Description
 
+The complete data is stored on Baidu Netdisk:
+
 The files blood1.bed and blood2.bed are example datasets provided with this repository.
 Each file contains four columns: chr, start, end, and binID (the regulatory element name), as well as the corresponding DNA sequence information for that element.
 Specifically, blood1.bed represents the original (pre-mutation) DNA sequences, while blood2.bed represents the post-mutation sequences, in which the bases at the mutation sites have been replaced by the mutated nucleotides.
