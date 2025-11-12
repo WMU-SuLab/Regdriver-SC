@@ -18,11 +18,11 @@ torch.manual_seed(12)
 def parse_args():
     parser = argparse.ArgumentParser(description="DNABERT-2 特征提取脚本")
     parser.add_argument("--model_path", type=str, required=True, help="模型路径")
-    parser.add_argument("--train_file", type=str, required=True, help="训练集文件路径")
-    parser.add_argument("--test_file", type=str, required=True, help="测试集文件路径")
+    parser.add_argument("--mutation1", type=str, required=True, help="训练集文件路径")
+    parser.add_argument("--mutation2", type=str, required=True, help="测试集文件路径")
     parser.add_argument("--output_dir", type=str, required=True, help="输出目录")
-    parser.add_argument("--train_output_name", type=str, default="train.npy", help="训练集输出文件名")
-    parser.add_argument("--test_output_name", type=str, default="test.npy", help="测试集输出文件名")
+    parser.add_argument("--mutation1_output_name", type=str, default="train.npy", help="训练集输出文件名")
+    parser.add_argument("--mutation2_output_name", type=str, default="test.npy", help="测试集输出文件名")
     return parser.parse_args()
 
 # ======================
